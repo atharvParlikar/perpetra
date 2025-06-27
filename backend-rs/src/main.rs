@@ -1,5 +1,8 @@
 mod order;
-use order::{Order, OrderBook};
+use order::{
+    Order, OrderBook, OrderType,
+    OrderType::{LIMIT, MARKET},
+};
 
 use axum::{
     extract::State,
@@ -43,10 +46,16 @@ async fn order_handler(
 ) -> Json<Response> {
     let (resp_tx, resp_rx) = oneshot::channel();
 
+    let mut type_: OrderType = MARKET;
+
+    if payload.type_ == "limit" {
+        type_ = LIMIT;
+    }
+
     let order = Order {
         id: Uuid::new_v4().to_string(),
         user_id: payload.jwt,
-        type_: payload.type_,
+        type_,
         amount: payload.amount,
         price: payload.price,
         side: payload.side,
