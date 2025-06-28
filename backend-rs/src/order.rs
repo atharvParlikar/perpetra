@@ -191,7 +191,7 @@ impl OrderBook {
 
         // descending price order for matching with best bids
         for (&price, queue) in self.buys.iter_mut().rev() {
-            if order.order_type == LIMIT && price <= order.price {
+            if order.order_type == LIMIT && price < order.price {
                 match self.sells.get_mut(&order.price) {
                     Some(sells) => {
                         if let Some(responder) = order.responder.take() {
