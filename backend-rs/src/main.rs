@@ -2,11 +2,12 @@
 
 mod order;
 
-use std::sync::Arc;
+use std::{fmt::format, sync::Arc};
 
 use order::{
-    Order, OrderBook, OrderType,
-    OrderType::{LIMIT, MARKET},
+    Order, OrderBook,
+    OrderType::{self, LIMIT, MARKET},
+    Side,
 };
 
 use axum::{
@@ -14,6 +15,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use rust_decimal::{prelude::FromPrimitive, Decimal};
+use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
@@ -24,10 +27,9 @@ struct DebugMsg {
     pub responder: Option<oneshot::Sender<String>>,
 }
 
-#[derive(Default)]
-struct Message {
-    order: Option<Order>,
-    debug: Option<DebugMsg>,
+enum Message {
+    Order(Order),
+    Debug(DebugMsg),
 }
 
 #[derive(Clone)]
@@ -44,8 +46,8 @@ struct Response {
 #[derive(Deserialize)]
 struct OrderRequest {
     type_: String,
-    amount: u64,
-    price: u64,
+    amount: f64,
+    price: f64,
     side: String,
     jwt: String, // TODO
 }
@@ -69,24 +71,44 @@ async fn order_handler(
         type_ = LIMIT;
     }
 
+    let side = match payload.side.as_str() {
+        "buy" => Side::BID,
+        "sell" => Side::ASK,
+        _ => {
+            return Json(Response {
+                message: String::new(),
+                error: format!("Invalid side: {}", payload.side),
+            })
+        }
+    };
+
+    let (price, amount) = match (
+        Decimal::from_f64(payload.price),
+        Decimal::from_f64(payload.amount),
+    ) {
+        (Some(p), Some(a)) => (p, a),
+        _ => {
+            return Json(Response {
+                message: String::new(),
+                error: format!(
+                    "Invalid price / amount: {} / {}",
+                    payload.price, payload.amount
+                ),
+            });
+        }
+    };
+
     let order = Order {
         id: Uuid::new_v4().to_string(),
         user_id: payload.jwt,
         order_type: type_,
-        amount: payload.amount,
-        price: payload.price,
-        side: payload.side,
+        amount,
+        price,
+        side,
         responder: Some(resp_tx),
     };
 
-    if let Err(e) = state
-        .tx
-        .send(Message {
-            order: Some(order),
-            ..Message::default()
-        })
-        .await
-    {
+    if let Err(e) = state.tx.send(Message::Order(order)).await {
         return Json(Response {
             message: "".to_string(),
             error: format!("Failed to send order to processing thread:\n{}", e),
@@ -113,13 +135,10 @@ async fn debug_handler(State(state): State<AppState>) -> Json<Response> {
 
     if let Err(e) = state
         .tx
-        .send(Message {
-            debug: Some(DebugMsg {
-                message: "book".to_string(),
-                responder: Some(resp_tx),
-            }),
-            ..Message::default()
-        })
+        .send(Message::Debug(DebugMsg {
+            message: "book".to_string(),
+            responder: Some(resp_tx),
+        }))
         .await
     {
         return Json(Response {
@@ -158,21 +177,17 @@ async fn main() {
 
     tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
-            match message.order {
-                Some(order) => {
+            match message {
+                Message::Order(order) => {
                     println!("Recived order: {}", order);
                     book.insert_order(order);
                 }
-                None => {}
-            }
-            match message.debug {
-                Some(dbg_msg) => {
+                Message::Debug(dbg_msg) => {
                     if let Some(responder) = dbg_msg.responder {
                         responder.send(format!("{}", book));
                         println!("{}", book);
                     }
                 }
-                None => {}
             }
         }
     });

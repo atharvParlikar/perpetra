@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, VecDeque};
-use std::fmt;
+use std::fmt::{self, write};
 
+use rust_decimal_macros::dec;
 use tokio::sync::oneshot;
+
+use rust_decimal::Decimal;
 use OrderType::{LIMIT, MARKET};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -10,30 +13,48 @@ pub enum OrderType {
     LIMIT,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum Side {
+    BID,
+    ASK,
+}
+
+impl fmt::Display for Side {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Side::BID => write!(f, "BID"),
+            Side::ASK => write!(f, "ASK"),
+        }
+    }
+}
+
+pub type Amount = Decimal;
+pub type Price = Decimal;
+
 pub struct Order {
     pub id: String,
     pub user_id: String,
     pub order_type: OrderType,
-    pub amount: u64,
-    pub price: u64,
-    pub side: String,
+    pub amount: Amount,
+    pub price: Price,
+    pub side: Side,
 
     pub responder: Option<oneshot::Sender<OrderResponse>>,
 }
 
 #[derive(Default)]
 pub struct OrderBook {
-    pub buys: BTreeMap<u64, VecDeque<Order>>,
-    pub sells: BTreeMap<u64, VecDeque<Order>>,
-    pub best_buy: Option<u64>,
-    pub best_sell: Option<u64>,
+    pub buys: BTreeMap<Price, VecDeque<Order>>,
+    pub sells: BTreeMap<Price, VecDeque<Order>>,
+    pub best_buy: Option<Price>,
+    pub best_sell: Option<Price>,
 }
 
 #[derive(Clone)]
 pub struct OrderResponse {
     pub status: String,
-    pub filled: u64,
-    pub remaining: u64,
+    pub filled: Amount,
+    pub remaining: Amount,
 }
 
 impl fmt::Display for Order {
@@ -88,18 +109,18 @@ impl OrderBook {
     }
 
     pub fn insert_order(&mut self, order: Order) {
-        match order.side.as_str() {
-            "buy" => self.handle_buy(order),
-            "sell" => self.handle_sell(order),
+        match order.side {
+            Side::BID => self.handle_buy(order),
+            Side::ASK => self.handle_sell(order),
             _ => println!("Invalid side: {}", order.side),
         }
         self.update_best_prices();
     }
 
     pub fn handle_buy(&mut self, mut order: Order) {
-        let mut filled = 0;
+        let mut filled: Amount = dec!(0);
 
-        let mut prices_to_remove: Vec<u64> = Vec::new();
+        let mut prices_to_remove: Vec<Price> = Vec::new();
 
         // ascending price order
         for (&price, queue) in self.sells.iter_mut() {
@@ -137,10 +158,10 @@ impl OrderBook {
                 ask.amount -= trade_amount;
                 filled += trade_amount;
 
-                if ask.amount == 0 {
+                if ask.amount == dec!(0) {
                     queue.pop_front();
                 }
-                if order.amount == 0 {
+                if order.amount == dec!(0) {
                     break;
                 }
             }
@@ -149,7 +170,7 @@ impl OrderBook {
                 prices_to_remove.push(price);
             }
 
-            if order.amount == 0 {
+            if order.amount == dec!(0) {
                 break;
             }
         }
@@ -163,7 +184,7 @@ impl OrderBook {
             LIMIT => "order partially filled, adding remaining in queue.".to_string(),
         };
 
-        if order.amount > 0 {
+        if order.amount > dec!(0) {
             if let Some(responder) = order.responder.take() {
                 let _ = responder.send(OrderResponse {
                     status: dynamic_status(order.order_type.clone()),
@@ -179,15 +200,15 @@ impl OrderBook {
                 let _ = responder.send(OrderResponse {
                     status: "order completely filled".to_string(),
                     filled,
-                    remaining: 0,
+                    remaining: dec!(0),
                 });
             }
         }
     }
 
     pub fn handle_sell(&mut self, mut order: Order) {
-        let mut filled = 0;
-        let mut prices_to_remove: Vec<u64> = Vec::new();
+        let mut filled = dec!(0);
+        let mut prices_to_remove: Vec<Price> = Vec::new();
 
         // descending price order for matching with best bids
         for (&price, queue) in self.buys.iter_mut().rev() {
@@ -225,10 +246,10 @@ impl OrderBook {
                 bid.amount -= trade_amount;
                 filled += trade_amount;
 
-                if bid.amount == 0 {
+                if bid.amount == dec!(0) {
                     queue.pop_front();
                 }
-                if order.amount == 0 {
+                if order.amount == dec!(0) {
                     break;
                 }
             }
@@ -237,7 +258,7 @@ impl OrderBook {
                 prices_to_remove.push(price);
             }
 
-            if order.amount == 0 {
+            if order.amount == dec!(0) {
                 break;
             }
         }
@@ -251,7 +272,7 @@ impl OrderBook {
             LIMIT => "order partially filled, adding remaining in queue.".to_string(),
         };
 
-        if order.amount > 0 {
+        if order.amount > dec!(0) {
             if let Some(responder) = order.responder.take() {
                 let _ = responder.send(OrderResponse {
                     status: dynamic_status(order.order_type.clone()),
@@ -267,7 +288,7 @@ impl OrderBook {
                 let _ = responder.send(OrderResponse {
                     status: "order completely filled".to_string(),
                     filled,
-                    remaining: 0,
+                    remaining: dec!(0),
                 });
             }
         }
