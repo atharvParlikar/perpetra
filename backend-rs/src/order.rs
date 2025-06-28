@@ -40,7 +40,7 @@ impl fmt::Display for Order {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "{}\n--------\nprice{}\namount{}\nside:{}\nuser:{}",
+            "{}\n--------\nprice: {}\namount: {}\nside: {}\nuser: {}",
             self.id, self.price, self.amount, self.side, self.user_id
         )
     }
@@ -103,7 +103,7 @@ impl OrderBook {
 
         // ascending price order
         for (&price, queue) in self.sells.iter_mut() {
-            if order.order_type == LIMIT && price >= order.price {
+            if order.order_type == LIMIT && price > order.price {
                 match self.buys.get_mut(&order.price) {
                     Some(buys) => {
                         if let Some(responder) = order.responder.take() {
