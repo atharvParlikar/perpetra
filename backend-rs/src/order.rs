@@ -1,11 +1,15 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::default;
 use std::fmt::{self, write};
+use tokio::sync::mpsc::Sender;
 
 use rust_decimal_macros::dec;
 use tokio::sync::oneshot;
 
 use rust_decimal::Decimal;
 use OrderType::{LIMIT, MARKET};
+
+use crate::position::{EngineEvent, Trade};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OrderType {
@@ -42,12 +46,12 @@ pub struct Order {
     pub responder: Option<oneshot::Sender<OrderResponse>>,
 }
 
-#[derive(Default)]
 pub struct OrderBook {
     pub buys: BTreeMap<Price, VecDeque<Order>>,
     pub sells: BTreeMap<Price, VecDeque<Order>>,
     pub best_buy: Option<Price>,
     pub best_sell: Option<Price>,
+    position_tx: Sender<EngineEvent>,
 }
 
 #[derive(Clone)]
@@ -104,16 +108,22 @@ impl fmt::Display for OrderBook {
 }
 
 impl OrderBook {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(position_tx: Sender<EngineEvent>) -> Self {
+        OrderBook {
+            buys: BTreeMap::new(),
+            sells: BTreeMap::new(),
+            best_buy: None,
+            best_sell: None,
+            position_tx,
+        }
     }
 
     pub fn insert_order(&mut self, order: Order) {
         match order.side {
             Side::BID => self.handle_buy(order),
             Side::ASK => self.handle_sell(order),
-            _ => println!("Invalid side: {}", order.side),
         }
+
         self.update_best_prices();
     }
 
@@ -157,6 +167,19 @@ impl OrderBook {
                 order.amount -= trade_amount;
                 ask.amount -= trade_amount;
                 filled += trade_amount;
+
+                //  TODO: try_send does not give enough fucks to try again if the buffer is full
+                //        it will simply throw an error, catch it and either drop the trade,
+                //        see why tf is is blocked as it shouldn't as it has 10k limit or try
+                //        again.
+                //
+                // let the position tracker know the trade just happened here
+                self.position_tx.send(EngineEvent::Trade(Trade {
+                    long_id: order.user_id.clone(),
+                    short_id: ask.user_id.clone(),
+                    amount: trade_amount,
+                    price,
+                }));
 
                 if ask.amount == dec!(0) {
                     queue.pop_front();
@@ -245,6 +268,14 @@ impl OrderBook {
                 order.amount -= trade_amount;
                 bid.amount -= trade_amount;
                 filled += trade_amount;
+
+                // let the position tracker know the trade just happened here
+                self.position_tx.try_send(EngineEvent::Trade(Trade {
+                    long_id: order.user_id.clone(),
+                    short_id: bid.user_id.clone(),
+                    amount: trade_amount,
+                    price,
+                }));
 
                 if bid.amount == dec!(0) {
                     queue.pop_front();

@@ -1,6 +1,7 @@
 #![allow(unused)]
 
 mod order;
+mod position;
 
 use std::{fmt::format, sync::Arc};
 
@@ -15,6 +16,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use position::{EngineEvent, Position, PositionMap};
 use rust_decimal::{prelude::FromPrimitive, Decimal};
 use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
@@ -123,9 +125,9 @@ async fn order_handler(
             ),
             error: String::from(""),
         }),
-        Err(_) => Json(Response {
+        Err(e) => Json(Response {
             message: String::from(""),
-            error: "Order was dropped before response".to_string(),
+            error: format!("Order was dropped before response | {}", e),
         }),
     }
 }
@@ -161,12 +163,17 @@ async fn debug_handler(State(state): State<AppState>) -> Json<Response> {
 
 #[tokio::main]
 async fn main() {
-    let (tx, mut rx) = mpsc::channel::<Message>(10000);
-    let tx = Arc::new(tx);
+    let (book_tx, mut book_rx) = mpsc::channel::<Message>(10000);
+    let book_tx = Arc::new(book_tx);
 
-    let mut book = OrderBook::new();
+    let (position_tx, mut position_rx) = mpsc::channel::<EngineEvent>(10000);
 
-    let state = AppState { tx: tx.clone() };
+    let mut book = OrderBook::new(position_tx);
+    let mut positions = PositionMap::new();
+
+    let state = AppState {
+        tx: book_tx.clone(),
+    };
 
     let app: Router = Router::new()
         .route("/", get(handler))
@@ -176,7 +183,7 @@ async fn main() {
         .with_state(state);
 
     tokio::spawn(async move {
-        while let Some(message) = rx.recv().await {
+        while let Some(message) = book_rx.recv().await {
             match message {
                 Message::Order(order) => {
                     println!("Recived order: {}", order);
@@ -192,7 +199,17 @@ async fn main() {
         }
     });
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    tokio::spawn(async move {
+        while let Some(event) = position_rx.recv().await {
+            match event {
+                EngineEvent::Trade(trade) => {
+                    println!("{:?}", trade);
+                }
+                _ => {}
+            }
+        }
+    });
 
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
