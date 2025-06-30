@@ -16,7 +16,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use position::{EngineEvent, Position, PositionMap};
+use position::{EngineEvent, Position, PositionMap, PositionTracker};
 use rust_decimal::{prelude::FromPrimitive, Decimal};
 use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
@@ -169,7 +169,7 @@ async fn main() {
     let (position_tx, mut position_rx) = mpsc::channel::<EngineEvent>(10000);
 
     let mut book = OrderBook::new(position_tx);
-    let mut positions = PositionMap::new();
+    let mut positions = PositionTracker::new();
 
     let state = AppState {
         tx: book_tx.clone(),
@@ -203,7 +203,7 @@ async fn main() {
         while let Some(event) = position_rx.blocking_recv() {
             match event {
                 EngineEvent::Trade(trade) => {
-                    println!("{:?}", trade);
+                    positions.update_position(trade);
                 }
                 _ => {}
             }

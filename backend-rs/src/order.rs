@@ -270,12 +270,14 @@ impl OrderBook {
                 filled += trade_amount;
 
                 // let the position tracker know the trade just happened here
-                self.position_tx.try_send(EngineEvent::Trade(Trade {
+                if let Err(e) = self.position_tx.try_send(EngineEvent::Trade(Trade {
                     long_id: order.user_id.clone(),
                     short_id: bid.user_id.clone(),
                     amount: trade_amount,
                     price,
-                }));
+                })) {
+                    println!("[ERROR] {}", e);
+                }
 
                 if bid.amount == dec!(0) {
                     queue.pop_front();
