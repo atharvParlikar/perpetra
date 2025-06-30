@@ -47,10 +47,10 @@ pub struct Order {
 }
 
 pub struct OrderBook {
-    pub buys: BTreeMap<Price, VecDeque<Order>>,
-    pub sells: BTreeMap<Price, VecDeque<Order>>,
-    pub best_buy: Option<Price>,
-    pub best_sell: Option<Price>,
+    pub bids: BTreeMap<Price, VecDeque<Order>>,
+    pub asks: BTreeMap<Price, VecDeque<Order>>,
+    pub best_bid: Option<Price>,
+    pub best_ask: Option<Price>,
     position_tx: Sender<EngineEvent>,
 }
 
@@ -73,16 +73,16 @@ impl fmt::Display for Order {
 
 impl fmt::Display for OrderBook {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if self.buys.is_empty() && self.sells.is_empty() {
+        if self.bids.is_empty() && self.asks.is_empty() {
             return write!(f, "OrderBook is empty");
         }
 
         let mut output = String::new();
 
         // Process bids
-        if !self.buys.is_empty() {
+        if !self.bids.is_empty() {
             output.push_str("=== BIDS ===\n");
-            for (price, orders) in &self.buys {
+            for (price, orders) in &self.bids {
                 output.push_str(&format!("Price level: {}\n", price));
                 for order in orders {
                     output.push_str(&format!("{}\n", order));
@@ -92,9 +92,9 @@ impl fmt::Display for OrderBook {
         }
 
         // Process asks
-        if !self.sells.is_empty() {
+        if !self.asks.is_empty() {
             output.push_str("=== ASKS ===\n\n");
-            for (price, orders) in &self.sells {
+            for (price, orders) in &self.asks {
                 output.push_str(&format!("Price level: {}\n", price));
                 for order in orders.iter().rev() {
                     output.push_str(&format!("{}\n", order));
@@ -110,10 +110,10 @@ impl fmt::Display for OrderBook {
 impl OrderBook {
     pub fn new(position_tx: Sender<EngineEvent>) -> Self {
         OrderBook {
-            buys: BTreeMap::new(),
-            sells: BTreeMap::new(),
-            best_buy: None,
-            best_sell: None,
+            bids: BTreeMap::new(),
+            asks: BTreeMap::new(),
+            best_bid: None,
+            best_ask: None,
             position_tx,
         }
     }
@@ -133,9 +133,9 @@ impl OrderBook {
         let mut prices_to_remove: Vec<Price> = Vec::new();
 
         // ascending price order
-        for (&price, queue) in self.sells.iter_mut() {
+        for (&price, queue) in self.asks.iter_mut() {
             if order.order_type == LIMIT && price > order.price {
-                match self.buys.get_mut(&order.price) {
+                match self.bids.get_mut(&order.price) {
                     Some(buys) => {
                         if let Some(responder) = order.responder.take() {
                             let _ = responder.send(OrderResponse {
@@ -151,7 +151,7 @@ impl OrderBook {
                     None => {
                         let mut new_queue: VecDeque<Order> = VecDeque::new();
                         new_queue.push_back(order);
-                        self.buys.insert(price, new_queue);
+                        self.bids.insert(price, new_queue);
                         return;
                     }
                 }
@@ -199,12 +199,12 @@ impl OrderBook {
         }
 
         for price in prices_to_remove {
-            self.sells.remove(&price);
+            self.asks.remove(&price);
         }
 
         let dynamic_status = |type_: OrderType| match type_ {
-            MARKET => "order partially filled, disreguarding remaining amount.".to_string(),
-            LIMIT => "order partially filled, adding remaining in queue.".to_string(),
+            MARKET => "disreguarding remaining amount.".to_string(),
+            LIMIT => "adding remaining in queue.".to_string(),
         };
 
         if order.amount > dec!(0) {
@@ -216,7 +216,7 @@ impl OrderBook {
                 });
             }
             if order.order_type == LIMIT {
-                self.buys.entry(order.price).or_default().push_back(order);
+                self.bids.entry(order.price).or_default().push_back(order);
             }
         } else {
             if let Some(responder) = order.responder.take() {
@@ -234,9 +234,9 @@ impl OrderBook {
         let mut prices_to_remove: Vec<Price> = Vec::new();
 
         // descending price order for matching with best bids
-        for (&price, queue) in self.buys.iter_mut().rev() {
+        for (&price, queue) in self.bids.iter_mut().rev() {
             if order.order_type == LIMIT && price < order.price {
-                match self.sells.get_mut(&order.price) {
+                match self.asks.get_mut(&order.price) {
                     Some(sells) => {
                         if let Some(responder) = order.responder.take() {
                             let _ = responder.send(OrderResponse {
@@ -252,7 +252,7 @@ impl OrderBook {
                     None => {
                         let mut new_queue: VecDeque<Order> = VecDeque::new();
                         new_queue.push_back(order);
-                        self.sells.insert(price, new_queue);
+                        self.asks.insert(price, new_queue);
                         return;
                     }
                 }
@@ -295,12 +295,12 @@ impl OrderBook {
         }
 
         for price in prices_to_remove {
-            self.buys.remove(&price);
+            self.bids.remove(&price);
         }
 
         let dynamic_status = |order_type: OrderType| match order_type {
-            MARKET => "order partially filled, disregarding remaining amount.".to_string(),
-            LIMIT => "order partially filled, adding remaining in queue.".to_string(),
+            MARKET => "disregarding remaining amount.".to_string(),
+            LIMIT => "adding remaining in queue.".to_string(),
         };
 
         if order.amount > dec!(0) {
@@ -312,7 +312,7 @@ impl OrderBook {
                 });
             }
             if order.order_type == LIMIT {
-                self.sells.entry(order.price).or_default().push_back(order);
+                self.asks.entry(order.price).or_default().push_back(order);
             }
         } else {
             if let Some(responder) = order.responder.take() {
@@ -326,8 +326,8 @@ impl OrderBook {
     }
 
     pub fn update_best_prices(&mut self) {
-        self.best_buy = self.buys.keys().next_back().copied();
-        self.best_sell = self.sells.keys().next().copied();
+        self.best_bid = self.bids.keys().next_back().copied();
+        self.best_ask = self.asks.keys().next().copied();
     }
 
     // // Helper methods for debugging and monitoring

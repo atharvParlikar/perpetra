@@ -120,8 +120,8 @@ async fn order_handler(
     match resp_rx.await {
         Ok(response) => Json(Response {
             message: format!(
-                "Order processed: filled {}, remaining {}",
-                response.filled, response.remaining
+                "Order processed: filled {}, remaining {}, {}",
+                response.filled, response.remaining, response.status
             ),
             error: String::from(""),
         }),
@@ -182,8 +182,25 @@ async fn main() {
         .route("/debug", get(debug_handler))
         .with_state(state);
 
-    tokio::spawn(async move {
-        while let Some(message) = book_rx.recv().await {
+    // tokio::spawn(async move {
+    //     while let Some(message) = book_rx.recv().await {
+    //         match message {
+    //             Message::Order(order) => {
+    //                 println!("Recived order: {}", order);
+    //                 book.insert_order(order);
+    //             }
+    //             Message::Debug(dbg_msg) => {
+    //                 if let Some(responder) = dbg_msg.responder {
+    //                     responder.send(format!("{}", book));
+    //                     println!("{}", book);
+    //                 }
+    //             }
+    //         }
+    //     }
+    // });
+
+    let book_thread = std::thread::spawn(move || {
+        while let Some(message) = book_rx.blocking_recv() {
             match message {
                 Message::Order(order) => {
                     println!("Recived order: {}", order);
@@ -199,8 +216,8 @@ async fn main() {
         }
     });
 
-    tokio::spawn(async move {
-        while let Some(event) = position_rx.recv().await {
+    let position_thread = std::thread::spawn(move || {
+        while let Some(event) = position_rx.blocking_recv() {
             match event {
                 EngineEvent::Trade(trade) => {
                     println!("{:?}", trade);
