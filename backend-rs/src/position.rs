@@ -60,7 +60,11 @@ impl PositionTracker {
                     / (trade.amount + position.size);
                 position.entry_price = new_entry_price;
                 position.size += trade.amount;
-                position.margin += trade.price * trade.amount;
+                if (position.size < dec!(0)) {
+                    position.margin -= trade.price * trade.amount;
+                } else {
+                    position.margin += trade.price * trade.amount;
+                }
             }
             Entry::Vacant(entry) => {
                 entry.insert(Position {
@@ -81,7 +85,11 @@ impl PositionTracker {
                     / (trade.amount + position.size);
                 position.entry_price = new_entry_price;
                 position.size -= trade.amount;
-                position.margin += trade.price * trade.amount;
+                if (position.size > dec!(0)) {
+                    position.margin += trade.price * trade.amount;
+                } else {
+                    position.margin -= trade.price * trade.amount;
+                }
             }
             Entry::Vacant(entry) => {
                 entry.insert(Position {
