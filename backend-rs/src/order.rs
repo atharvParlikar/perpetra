@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::default;
 use std::fmt::{self, write};
+use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
 use rust_decimal_macros::dec;
@@ -51,7 +52,7 @@ pub struct OrderBook {
     pub asks: BTreeMap<Price, VecDeque<Order>>,
     pub best_bid: Option<Price>,
     pub best_ask: Option<Price>,
-    position_tx: Sender<EngineEvent>,
+    position_tx: Arc<Sender<EngineEvent>>,
 }
 
 #[derive(Clone)]
@@ -108,7 +109,7 @@ impl fmt::Display for OrderBook {
 }
 
 impl OrderBook {
-    pub fn new(position_tx: Sender<EngineEvent>) -> Self {
+    pub fn new(position_tx: Arc<Sender<EngineEvent>>) -> Self {
         OrderBook {
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),

@@ -1,22 +1,41 @@
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use std::{collections::HashMap, fmt, time::Instant};
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    fmt,
+    sync::Arc,
+};
+use tokio::sync::{mpsc::Sender, oneshot};
+use uuid::Uuid;
 
-use crate::order::Side;
+use crate::{
+    oracle::BtcPrice,
+    order::{
+        Order,
+        OrderType::MARKET,
+        Side::{ASK, BID},
+    },
+    Message,
+};
 
 pub struct Position {
     pub user_id: String,
     pub size: Decimal,
     pub entry_price: Decimal,
     pub margin: Decimal,
-    pub realized_pnl: Decimal,
+    pub unrealized_pnl: Decimal,
 }
 
 pub type PositionMap = HashMap<String, Position>;
 
+pub type BookLiquidationTx = Arc<Sender<Message>>;
+
 pub struct PositionTracker {
     positions: PositionMap,
+    book_liquidation_tx: BookLiquidationTx,
 }
+
+const LIQUIDATION_THRESHOLD: Decimal = dec!(0.8);
 
 #[derive(Debug)]
 pub struct Trade {
@@ -38,14 +57,14 @@ impl fmt::Display for Trade {
 
 pub enum EngineEvent {
     Trade(Trade),
-    PositionClosed { user_id: String },
-    Liquidation { user_id: String },
+    Oracle { mark_price: Decimal },
 }
 
 impl PositionTracker {
-    pub fn new() -> PositionTracker {
+    pub fn new(book_liquidation_tx: BookLiquidationTx) -> PositionTracker {
         PositionTracker {
             positions: PositionMap::new(),
+            book_liquidation_tx,
         }
     }
 
@@ -72,7 +91,7 @@ impl PositionTracker {
                     entry_price: trade.price,
                     size: trade.amount,
                     margin: trade.price * trade.amount,
-                    realized_pnl: dec!(0),
+                    unrealized_pnl: dec!(0),
                 });
             }
         }
@@ -97,9 +116,51 @@ impl PositionTracker {
                     entry_price: trade.price,
                     size: -trade.amount,
                     margin: trade.price * trade.amount,
-                    realized_pnl: dec!(0),
+                    unrealized_pnl: dec!(0),
                 });
             }
+        }
+    }
+
+    fn liquidate(&mut self, user_id: &String) {
+        let (resp_tx, resp_rx) = oneshot::channel();
+
+        if let Some(position) = self.positions.get(user_id) {
+            let mut order = Order {
+                id: Uuid::new_v4().to_string(),
+                user_id: position.user_id.clone(),
+                amount: position.size,
+                price: dec!(0),
+                order_type: MARKET,
+                side: ASK,
+
+                responder: Some(resp_tx),
+            };
+
+            if position.size < dec!(0) {
+                order.side = BID;
+            }
+
+            self.book_liquidation_tx.send(Message::Order(order));
+        }
+    }
+
+    // Update P&L and process liquidation if any
+    pub fn update_risk(&mut self, mark_price: Decimal) {
+        let mut positions_to_liquidate: Vec<String> = Vec::new();
+        for (_, position) in self.positions.iter_mut() {
+            position.unrealized_pnl = position.size * (mark_price - position.entry_price);
+
+            if (position.margin + position.unrealized_pnl)
+                <= position.margin * LIQUIDATION_THRESHOLD
+            {
+                println!("[LIQUIDATION] {}", position.user_id);
+                positions_to_liquidate.push(position.user_id.clone());
+            }
+        }
+
+        for user_id in &positions_to_liquidate {
+            self.liquidate(user_id);
         }
     }
 }

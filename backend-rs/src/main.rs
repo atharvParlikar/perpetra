@@ -1,10 +1,12 @@
 #![allow(unused)]
 
+mod oracle;
 mod order;
 mod position;
 
 use std::{fmt::format, sync::Arc};
 
+use oracle::Oracle;
 use order::{
     Order, OrderBook,
     OrderType::{self, LIMIT, MARKET},
@@ -20,7 +22,10 @@ use position::{EngineEvent, Position, PositionMap, PositionTracker};
 use rust_decimal::{prelude::FromPrimitive, Decimal};
 use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    sync::{mpsc, oneshot},
+    time::{interval, Duration},
+};
 use uuid::Uuid;
 
 #[derive(Default)]
@@ -166,10 +171,14 @@ async fn main() {
     let (book_tx, mut book_rx) = mpsc::channel::<Message>(10000);
     let book_tx = Arc::new(book_tx);
 
-    let (position_tx, mut position_rx) = mpsc::channel::<EngineEvent>(10000);
+    let (book_liquidation_tx, mut book_liquidation_rx) = mpsc::channel::<Message>(10000);
+    let book_liquidation_tx = Arc::new(book_liquidation_tx);
 
-    let mut book = OrderBook::new(position_tx);
-    let mut positions = PositionTracker::new();
+    let (position_tx, mut position_rx) = mpsc::channel::<EngineEvent>(10000);
+    let position_tx = Arc::new(position_tx);
+
+    let mut book = OrderBook::new(position_tx.clone());
+    let mut positions = PositionTracker::new(book_liquidation_tx);
 
     let state = AppState {
         tx: book_tx.clone(),
@@ -183,32 +192,62 @@ async fn main() {
         .with_state(state);
 
     let book_thread = std::thread::spawn(move || {
-        while let Some(message) = book_rx.blocking_recv() {
-            match message {
-                Message::Order(order) => {
-                    println!("Recived order: {}", order);
-                    book.insert_order(order);
-                }
-                Message::Debug(dbg_msg) => {
-                    if let Some(responder) = dbg_msg.responder {
-                        responder.send(format!("{}", book));
-                        println!("{}", book);
+        let mini_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create runtime");
+
+        mini_runtime.block_on(async move {
+            loop {
+                tokio::select! {
+                    Some(message) = book_liquidation_rx.recv() => {
+                        match message {
+                            Message::Order(order) => {
+                                println!("[LIQUIDATION] order: {}", order);
+                                book.insert_order(order);
+                            }
+                            _ => println!("Unexpected liquidation message"),
+                        }
                     }
+
+                    Some(message) = book_rx.recv() => {
+                        match message {
+                            Message::Order(order) => {
+                                println!("📘 Normal order: {}", order);
+                                book.insert_order(order);
+                            }
+                            Message::Debug(dbg_msg) => {
+                                if let Some(responder) = dbg_msg.responder {
+                                    responder.send(format!("{}", book));
+                                }
+                            }
+                        }
+                    }
+
+                    else => break, // All senders closed
                 }
             }
-        }
+        });
     });
 
     let position_thread = std::thread::spawn(move || {
         while let Some(event) = position_rx.blocking_recv() {
             match event {
-                EngineEvent::Trade(trade) => {
-                    positions.update_position(trade);
-                }
-                _ => {}
+                EngineEvent::Trade(trade) => positions.update_position(trade),
+                EngineEvent::Oracle { mark_price } => positions.update_risk(mark_price),
             }
         }
     });
+
+    let mut interval = interval(Duration::from_millis(1000));
+    let mut oracle = Oracle::new(None);
+
+    loop {
+        interval.tick().await;
+        let mark_price = oracle.next_price().price_usd;
+        println!("Mark price: {}", mark_price);
+        position_tx.send(EngineEvent::Oracle { mark_price });
+    }
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
