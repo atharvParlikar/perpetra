@@ -28,7 +28,7 @@ pub struct Position {
 
 pub type PositionMap = HashMap<String, Position>;
 
-pub type BookLiquidationTx = Arc<Sender<Message>>;
+pub type BookLiquidationTx = Sender<Message>;
 
 pub struct PositionTracker {
     positions: PositionMap,
@@ -37,10 +37,12 @@ pub struct PositionTracker {
 
 const LIQUIDATION_THRESHOLD: Decimal = dec!(0.8);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Trade {
     pub long_id: String,
     pub short_id: String,
+    pub long_leverage: Decimal,
+    pub short_leverage: Decimal,
     pub amount: Decimal,
     pub price: Decimal,
 }
@@ -57,7 +59,10 @@ impl fmt::Display for Trade {
 
 pub enum EngineEvent {
     Trade(Trade),
-    Oracle { mark_price: Decimal },
+}
+
+fn adjust_for_leverage(margin: Decimal, leverage: Decimal) -> Decimal {
+    margin / leverage
 }
 
 impl PositionTracker {
@@ -68,7 +73,7 @@ impl PositionTracker {
         }
     }
 
-    pub fn update_position(&mut self, trade: Trade) {
+    pub fn update_position(&mut self, trade: &Trade) {
         use std::collections::hash_map::Entry;
 
         match self.positions.entry(trade.long_id.clone()) {
@@ -79,10 +84,13 @@ impl PositionTracker {
                     / (trade.amount + position.size);
                 position.entry_price = new_entry_price;
                 position.size += trade.amount;
+                // new trade going in the same direction, i.e trade_1: long, trade_2: long
                 if (position.size < dec!(0)) {
-                    position.margin -= trade.price * trade.amount;
+                    position.margin +=
+                        adjust_for_leverage(trade.price * trade.amount, trade.long_leverage)
                 } else {
-                    position.margin += trade.price * trade.amount;
+                    position.margin -=
+                        adjust_for_leverage(trade.price * trade.amount, trade.long_leverage);
                 }
             }
             Entry::Vacant(entry) => {
@@ -90,7 +98,7 @@ impl PositionTracker {
                     user_id: trade.long_id.clone(),
                     entry_price: trade.price,
                     size: trade.amount,
-                    margin: trade.price * trade.amount,
+                    margin: adjust_for_leverage(trade.price * trade.amount, trade.long_leverage),
                     unrealized_pnl: dec!(0),
                 });
             }
@@ -104,10 +112,14 @@ impl PositionTracker {
                     / (trade.amount + position.size);
                 position.entry_price = new_entry_price;
                 position.size -= trade.amount;
+
+                // new trade going in the same direction, i.e trade_1: short, trade_2: short
                 if (position.size > dec!(0)) {
-                    position.margin += trade.price * trade.amount;
+                    position.margin +=
+                        adjust_for_leverage(trade.price * trade.amount, trade.short_leverage)
                 } else {
-                    position.margin -= trade.price * trade.amount;
+                    position.margin -=
+                        adjust_for_leverage(trade.price * trade.amount, trade.short_leverage);
                 }
             }
             Entry::Vacant(entry) => {
@@ -115,7 +127,7 @@ impl PositionTracker {
                     user_id: trade.long_id.clone(),
                     entry_price: trade.price,
                     size: -trade.amount,
-                    margin: trade.price * trade.amount,
+                    margin: adjust_for_leverage(trade.price * trade.amount, trade.short_leverage),
                     unrealized_pnl: dec!(0),
                 });
             }
@@ -133,6 +145,7 @@ impl PositionTracker {
                 price: dec!(0),
                 order_type: MARKET,
                 side: ASK,
+                leverage: dec!(1),
 
                 responder: Some(resp_tx),
             };
@@ -154,7 +167,6 @@ impl PositionTracker {
             if (position.margin + position.unrealized_pnl)
                 <= position.margin * LIQUIDATION_THRESHOLD
             {
-                println!("[LIQUIDATION] {}", position.user_id);
                 positions_to_liquidate.push(position.user_id.clone());
             }
         }

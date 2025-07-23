@@ -1,0 +1,1 @@
+    ws.onmessage = (msgEvent: MessageEvent<string>) => {

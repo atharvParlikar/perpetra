@@ -43,6 +43,7 @@ pub struct Order {
     pub amount: Amount,
     pub price: Price,
     pub side: Side,
+    pub leverage: Decimal,
 
     pub responder: Option<oneshot::Sender<OrderResponse>>,
 }
@@ -52,7 +53,8 @@ pub struct OrderBook {
     pub asks: BTreeMap<Price, VecDeque<Order>>,
     pub best_bid: Option<Price>,
     pub best_ask: Option<Price>,
-    position_tx: Arc<Sender<EngineEvent>>,
+
+    position_tx: crossbeam::channel::Sender<EngineEvent>,
 }
 
 #[derive(Clone)]
@@ -66,8 +68,8 @@ impl fmt::Display for Order {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "{}\n--------\nprice: {}\namount: {}\nside: {}\nuser: {}",
-            self.id, self.price, self.amount, self.side, self.user_id
+            "{} {} {} BTC @ {}",
+            self.user_id, self.side, self.amount, self.price
         )
     }
 }
@@ -109,7 +111,7 @@ impl fmt::Display for OrderBook {
 }
 
 impl OrderBook {
-    pub fn new(position_tx: Arc<Sender<EngineEvent>>) -> Self {
+    pub fn new(position_tx: crossbeam::channel::Sender<EngineEvent>) -> Self {
         OrderBook {
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
@@ -151,6 +153,15 @@ impl OrderBook {
                     }
                     None => {
                         let mut new_queue: VecDeque<Order> = VecDeque::new();
+
+                        if let Some(responder_tx) = order.responder.take() {
+                            responder_tx.send(OrderResponse {
+                                status: "could not match, added to queue!".to_string(),
+                                filled: dec!(0),
+                                remaining: order.amount,
+                            });
+                        }
+
                         new_queue.push_back(order);
                         self.bids.insert(price, new_queue);
                         return;
@@ -173,11 +184,13 @@ impl OrderBook {
                 //        it will simply throw an error, catch it and either drop the trade,
                 //        see why tf is is blocked as it shouldn't as it has 10k limit or try
                 //        again.
-                //
+
                 // let the position tracker know the trade just happened here
-                self.position_tx.send(EngineEvent::Trade(Trade {
+                self.position_tx.try_send(EngineEvent::Trade(Trade {
                     long_id: order.user_id.clone(),
                     short_id: ask.user_id.clone(),
+                    long_leverage: order.leverage,
+                    short_leverage: ask.leverage,
                     amount: trade_amount,
                     price,
                 }));
@@ -252,6 +265,15 @@ impl OrderBook {
                     }
                     None => {
                         let mut new_queue: VecDeque<Order> = VecDeque::new();
+
+                        if let Some(responder_tx) = order.responder.take() {
+                            responder_tx.send(OrderResponse {
+                                status: "could not match, adding to queue".to_string(),
+                                filled: filled,
+                                remaining: order.amount,
+                            });
+                        }
+
                         new_queue.push_back(order);
                         self.asks.insert(price, new_queue);
                         return;
@@ -274,6 +296,8 @@ impl OrderBook {
                 if let Err(e) = self.position_tx.try_send(EngineEvent::Trade(Trade {
                     long_id: order.user_id.clone(),
                     short_id: bid.user_id.clone(),
+                    long_leverage: order.leverage,
+                    short_leverage: bid.leverage,
                     amount: trade_amount,
                     price,
                 })) {
