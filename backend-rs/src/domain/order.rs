@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::default;
 use std::fmt::{self, write};
 use std::sync::Arc;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{self, Sender};
 
 use rust_decimal_macros::dec;
 use tokio::sync::oneshot;
@@ -10,7 +10,7 @@ use tokio::sync::oneshot;
 use rust_decimal::Decimal;
 use OrderType::{LIMIT, MARKET};
 
-use crate::position::{EngineEvent, Trade};
+use crate::domain::position::{EngineEvent, Trade};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OrderType {
@@ -54,7 +54,7 @@ pub struct OrderBook {
     pub best_bid: Option<Price>,
     pub best_ask: Option<Price>,
 
-    position_tx: crossbeam::channel::Sender<EngineEvent>,
+    position_tx: mpsc::UnboundedSender<EngineEvent>,
 }
 
 #[derive(Clone)]
@@ -111,7 +111,7 @@ impl fmt::Display for OrderBook {
 }
 
 impl OrderBook {
-    pub fn new(position_tx: crossbeam::channel::Sender<EngineEvent>) -> Self {
+    pub fn new(position_tx: mpsc::UnboundedSender<EngineEvent>) -> Self {
         OrderBook {
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
@@ -173,7 +173,7 @@ impl OrderBook {
                 let trade_amount = order.amount.min(ask.amount);
                 println!(
                     "Matched BUY {} with SELL {} @ {} for {}",
-                    order.id, ask.id, price, trade_amount
+                    order.user_id, ask.user_id, price, trade_amount
                 );
 
                 order.amount -= trade_amount;
@@ -186,7 +186,7 @@ impl OrderBook {
                 //        again.
 
                 // let the position tracker know the trade just happened here
-                self.position_tx.try_send(EngineEvent::Trade(Trade {
+                self.position_tx.send(EngineEvent::Trade(Trade {
                     long_id: order.user_id.clone(),
                     short_id: ask.user_id.clone(),
                     long_leverage: order.leverage,
@@ -285,7 +285,7 @@ impl OrderBook {
                 let trade_amount = order.amount.min(bid.amount);
                 println!(
                     "Matched SELL {} with BUY {} @ {} for {}",
-                    order.id, bid.id, price, trade_amount
+                    order.user_id, bid.user_id, price, trade_amount
                 );
 
                 order.amount -= trade_amount;
@@ -293,7 +293,7 @@ impl OrderBook {
                 filled += trade_amount;
 
                 // let the position tracker know the trade just happened here
-                if let Err(e) = self.position_tx.try_send(EngineEvent::Trade(Trade {
+                if let Err(e) = self.position_tx.send(EngineEvent::Trade(Trade {
                     long_id: order.user_id.clone(),
                     short_id: bid.user_id.clone(),
                     long_leverage: order.leverage,
