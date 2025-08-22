@@ -3,15 +3,21 @@ use rust_decimal::{prelude::FromPrimitive, Decimal};
 use rust_decimal_macros::dec;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::domain::utils::EMA;
+
+const MOVING_AVERAGE_DURATION: usize = 30;
+
 #[derive(Debug, Clone, Copy)]
 pub struct BtcPrice {
     pub timestamp: u64,
     pub price_usd: Decimal,
+    pub moving_average: Decimal,
 }
 
 pub struct Oracle {
     price: Decimal,
     rng: StdRng,
+    moving_average: Decimal,
 }
 
 impl Oracle {
@@ -26,6 +32,7 @@ impl Oracle {
         Oracle {
             price: dec!(60_000.0),
             rng: StdRng::seed_from_u64(seed),
+            moving_average: dec!(60_000.0),
         }
     }
 
@@ -58,12 +65,21 @@ impl Oracle {
 
         let pct_change = drift + noise + event;
 
-        self.price *= dec!(1.0) + Decimal::from_f64(pct_change).unwrap(); //  HACK: make sure unwrap() never panics
+        self.price *= dec!(1.0) + Decimal::from_f64(pct_change).unwrap();
         self.price = self.price.max(dec!(100.0)); // Never go below $100
 
-        BtcPrice {
+        self.moving_average = EMA(
+            self.price,
+            self.moving_average,
+            Decimal::from_usize(MOVING_AVERAGE_DURATION).unwrap(),
+        );
+
+        let btc_price = BtcPrice {
             timestamp: now,
             price_usd: self.price,
-        }
+            moving_average: self.moving_average,
+        };
+
+        btc_price
     }
 }

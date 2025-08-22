@@ -22,6 +22,12 @@ pub enum OrderBookMessage {
     Order(Order),
 }
 
-pub enum SocketMessage {
+pub enum SocketMessageSend {
     Trade(Trade),
+}
+
+#[derive(Deserialize)]
+pub struct SocketMessageRecv {
+    pub event: String,
+    pub jwt: Option<String>,
 }

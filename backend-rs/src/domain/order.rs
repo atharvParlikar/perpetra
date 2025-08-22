@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
-use std::default;
-use std::fmt::{self, write};
-use std::sync::Arc;
-use tokio::sync::mpsc::{self, Sender};
+use std::fmt::{self};
+use tokio::sync::mpsc::{self};
 
 use rust_decimal_macros::dec;
 use tokio::sync::oneshot;
@@ -155,11 +153,13 @@ impl OrderBook {
                         let mut new_queue: VecDeque<Order> = VecDeque::new();
 
                         if let Some(responder_tx) = order.responder.take() {
-                            responder_tx.send(OrderResponse {
+                            if let Err(_) = responder_tx.send(OrderResponse {
                                 status: "could not match, added to queue!".to_string(),
                                 filled: dec!(0),
                                 remaining: order.amount,
-                            });
+                            }) {
+                                eprintln!("some shit happened to oneshot responder, can't send...");
+                            }
                         }
 
                         new_queue.push_back(order);
@@ -186,14 +186,16 @@ impl OrderBook {
                 //        again.
 
                 // let the position tracker know the trade just happened here
-                self.position_tx.send(EngineEvent::Trade(Trade {
+                if let Err(err) = self.position_tx.send(EngineEvent::Trade(Trade {
                     long_id: order.user_id.clone(),
                     short_id: ask.user_id.clone(),
                     long_leverage: order.leverage,
                     short_leverage: ask.leverage,
                     amount: trade_amount,
                     price,
-                }));
+                })) {
+                    eprintln!("{}", err);
+                }
 
                 if ask.amount == dec!(0) {
                     queue.pop_front();
@@ -267,11 +269,13 @@ impl OrderBook {
                         let mut new_queue: VecDeque<Order> = VecDeque::new();
 
                         if let Some(responder_tx) = order.responder.take() {
-                            responder_tx.send(OrderResponse {
+                            if let Err(_) = responder_tx.send(OrderResponse {
                                 status: "could not match, adding to queue".to_string(),
                                 filled: filled,
                                 remaining: order.amount,
-                            });
+                            }) {
+                                eprintln!("some shit happened to oneshot responder, can't send...");
+                            }
                         }
 
                         new_queue.push_back(order);
@@ -301,7 +305,7 @@ impl OrderBook {
                     amount: trade_amount,
                     price,
                 })) {
-                    println!("[ERROR] {}", e);
+                    println!("[POSITION SENDER ERROR] {}", e);
                 }
 
                 if bid.amount == dec!(0) {
@@ -357,30 +361,32 @@ impl OrderBook {
         self.best_ask = self.asks.keys().next().copied();
     }
 
-    // // Helper methods for debugging and monitoring
-    // pub fn get_spread(&self) -> Option<u64> {
-    //     match (self.best_buy, self.best_sell) {
-    //         (Some(bid), Some(ask)) => Some(ask - bid),
-    //         _ => None,
-    //     }
-    // }
-    //
-    // pub fn get_book_depth(&self, levels: usize) -> (Vec<(u64, u64)>, Vec<(u64, u64)>) {
-    //     let bids: Vec<(u64, u64)> = self
-    //         .buys
-    //         .iter()
-    //         .rev()
-    //         .take(levels)
-    //         .map(|(&price, queue)| (price, queue.iter().map(|o| o.amount).sum()))
-    //         .collect();
-    //
-    //     let asks: Vec<(u64, u64)> = self
-    //         .sells
-    //         .iter()
-    //         .take(levels)
-    //         .map(|(&price, queue)| (price, queue.iter().map(|o| o.amount).sum()))
-    //         .collect();
-    //
-    //     (bids, asks)
-    // }
+    pub fn get_spread(&self) -> Option<Decimal> {
+        match (self.best_bid, self.best_ask) {
+            (Some(bid), Some(ask)) => Some(ask - bid),
+            _ => None,
+        }
+    }
+
+    pub fn get_book_depth(
+        &self,
+        levels: usize,
+    ) -> (Vec<(Decimal, Decimal)>, Vec<(Decimal, Decimal)>) {
+        let bids: Vec<(Decimal, Decimal)> = self
+            .bids
+            .iter()
+            .rev()
+            .take(levels)
+            .map(|(&price, queue)| (price, queue.iter().map(|o| o.amount).sum()))
+            .collect();
+
+        let asks: Vec<(Decimal, Decimal)> = self
+            .asks
+            .iter()
+            .take(levels)
+            .map(|(&price, queue)| (price, queue.iter().map(|o| o.amount).sum()))
+            .collect();
+
+        (bids, asks)
+    }
 }

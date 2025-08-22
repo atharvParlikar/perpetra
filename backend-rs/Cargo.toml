@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 axum = {version = "0.8.4", features = ["ws"]}
-crossbeam = "0.8.4"
 rand = "0.9.1"
 rand_distr = "0.5.1"
 rust_decimal = "1.37.2"
