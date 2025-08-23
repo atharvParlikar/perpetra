@@ -9,6 +9,7 @@ use rust_decimal::Decimal;
 use OrderType::{LIMIT, MARKET};
 
 use crate::domain::position::{EngineEvent, Trade};
+use crate::domain::wallet::{WalletEvent, WalletMessage, WalletOneshotReply};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OrderType {
@@ -53,6 +54,7 @@ pub struct OrderBook {
     pub best_ask: Option<Price>,
 
     position_tx: mpsc::UnboundedSender<EngineEvent>,
+    wallet_tx: mpsc::UnboundedSender<WalletEvent>,
 }
 
 #[derive(Clone)]
@@ -61,7 +63,6 @@ pub struct OrderResponse {
     pub filled: Amount,
     pub remaining: Amount,
 }
-
 impl fmt::Display for Order {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
@@ -109,26 +110,64 @@ impl fmt::Display for OrderBook {
 }
 
 impl OrderBook {
-    pub fn new(position_tx: mpsc::UnboundedSender<EngineEvent>) -> Self {
+    pub fn new(
+        position_tx: mpsc::UnboundedSender<EngineEvent>,
+        wallet_tx: mpsc::UnboundedSender<WalletEvent>,
+    ) -> Self {
         OrderBook {
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
             best_bid: None,
             best_ask: None,
             position_tx,
+            wallet_tx,
         }
     }
 
-    pub fn insert_order(&mut self, order: Order) {
+    pub async fn insert_order(&mut self, order: Order) {
         match order.side {
-            Side::BID => self.handle_buy(order),
-            Side::ASK => self.handle_sell(order),
+            Side::BID => self.handle_buy(order).await,
+            Side::ASK => self.handle_sell(order).await,
         }
 
         self.update_best_prices();
     }
 
-    pub fn handle_buy(&mut self, mut order: Order) {
+    pub async fn handle_buy(&mut self, mut order: Order) {
+        let (oneshot_tx, oneshot_rx) = oneshot::channel::<WalletOneshotReply>();
+
+        if let Err(err) = self.wallet_tx.send(WalletEvent::Debit(WalletMessage {
+            wallet_id: order.user_id.clone(),
+            amount: order.amount * order.price,
+
+            oneshot_reply: Some(oneshot_tx),
+        })) {
+            eprintln!("[ORDER WALLET CHECK ERROR] {}", err);
+        }
+
+        match oneshot_rx.await {
+            Ok(msg) => {
+                if !msg.success {
+                    if let Some(responder) = order.responder {
+                        if let Err(_) = responder.send(OrderResponse {
+                            status: "order could not be made, insufficient balance".to_string(),
+                            filled: dec!(0),
+                            remaining: dec!(0),
+                        }) {
+                            eprintln!(
+                                "[ORDER WALLET CHECK RESPONSE ERROR] cannot send error message back"
+                            );
+                        }
+                    }
+                    return;
+                }
+            }
+            Err(_) => {
+                eprintln!("[ORDER WALLET CHECK ERROR] wallet task dropped oneshot sender");
+                return;
+            }
+        }
+
         let mut filled: Amount = dec!(0);
 
         let mut prices_to_remove: Vec<Price> = Vec::new();
@@ -245,7 +284,41 @@ impl OrderBook {
         }
     }
 
-    pub fn handle_sell(&mut self, mut order: Order) {
+    pub async fn handle_sell(&mut self, mut order: Order) {
+        let (oneshot_tx, oneshot_rx) = oneshot::channel::<WalletOneshotReply>();
+
+        if let Err(err) = self.wallet_tx.send(WalletEvent::Debit(WalletMessage {
+            wallet_id: order.user_id.clone(),
+            amount: order.amount * order.price,
+
+            oneshot_reply: Some(oneshot_tx),
+        })) {
+            eprintln!("[ORDER WALLET CHECK ERROR] {}", err);
+        }
+
+        match oneshot_rx.await {
+            Ok(msg) => {
+                if !msg.success {
+                    if let Some(responder) = order.responder {
+                        if let Err(_) = responder.send(OrderResponse {
+                            status: "order could not be made, insufficient balance".to_string(),
+                            filled: dec!(0),
+                            remaining: dec!(0),
+                        }) {
+                            eprintln!(
+                                "[ORDER WALLET CHECK RESPONSE ERROR] cannot send error message back"
+                            );
+                        }
+                    }
+                    return;
+                }
+            }
+            Err(_) => {
+                eprintln!("[ORDER WALLET CHECK ERROR] wallet task dropped oneshot sender");
+                return;
+            }
+        }
+
         let mut filled = dec!(0);
         let mut prices_to_remove: Vec<Price> = Vec::new();
 

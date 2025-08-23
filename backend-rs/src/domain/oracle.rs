@@ -71,7 +71,7 @@ impl Oracle {
         self.moving_average = EMA(
             self.price,
             self.moving_average,
-            Decimal::from_usize(MOVING_AVERAGE_DURATION).unwrap(),
+            Decimal::from_usize(2 / (MOVING_AVERAGE_DURATION + 1)).unwrap(),
         );
 
         let btc_price = BtcPrice {
