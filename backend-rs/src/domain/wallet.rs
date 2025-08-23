@@ -4,21 +4,28 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use tokio::sync::oneshot;
 
+use crate::domain::wallet;
+
 pub struct WalletOneshotReply {
     pub success: bool,
     pub message: String,
 }
 
-pub struct WalletMessage {
+pub struct WalletDebitMessage {
     pub wallet_id: String,
     pub amount: Decimal,
 
     pub oneshot_reply: Option<oneshot::Sender<WalletOneshotReply>>,
 }
 
+pub struct WalletCreditMessage {
+    pub wallet_id: String,
+    pub amount: Decimal,
+}
+
 pub enum WalletEvent {
-    Debit(WalletMessage),
-    Credit(WalletMessage),
+    Debit(WalletDebitMessage),
+    Credit(WalletCreditMessage),
 }
 
 pub struct WalletManager {
@@ -27,8 +34,10 @@ pub struct WalletManager {
 
 impl WalletManager {
     pub fn new() -> Self {
+        let mut balance_map = HashMap::new();
+        balance_map.insert("exchange".to_string(), dec!(10_000_000));
         WalletManager {
-            balance_map: HashMap::new(),
+            balance_map: balance_map,
         }
     }
 
@@ -62,5 +71,15 @@ impl WalletManager {
             .entry(wallet_id)
             .and_modify(|b| *b += amount);
         // no or_insert here, cuz not possible
+    }
+
+    pub fn transfer(&mut self, payment_sender_id: String, payment_reciever_id: String) {}
+
+    pub fn get_balance(self, wallet_id: String) -> Option<String> {
+        if let Some(b) = self.balance_map.get(&wallet_id) {
+            Some(b.to_string())
+        } else {
+            None
+        }
     }
 }

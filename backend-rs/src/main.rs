@@ -43,8 +43,8 @@ async fn main() {
     let mut wallets = WalletManager::new();
     let (wallet_tx, mut wallet_rx) = mpsc::unbounded_channel::<WalletEvent>();
 
-    let mut book = OrderBook::new(position_tx.clone(), wallet_tx);
-    let positions = PositionTracker::new(liquidation_order_queue_tx);
+    let mut book = OrderBook::new(position_tx.clone(), wallet_tx.clone());
+    let positions = PositionTracker::new(liquidation_order_queue_tx, wallet_tx.clone());
     let sockets: Arc<Mutex<SocketList>> = Arc::new(Mutex::new(HashMap::new()));
 
     let book_state = BookState { tx: book_tx };
@@ -65,20 +65,22 @@ async fn main() {
             .expect("Failed to create tokio runtime on book thread");
 
         mini_runtime.block_on(async move {
-            tokio::select! {
-                biased;
+            loop {
+                tokio::select! {
+                    biased;
 
-                maybe_liquidation_message = liquidation_order_queue_rx.recv() => {
-                    if let Some(OrderBookMessage::Order(order)) = maybe_liquidation_message {
-                        println!("[LIQUIDATION] order: {}", order);
-                        book.insert_order(order).await;
+                    maybe_liquidation_message = liquidation_order_queue_rx.recv() => {
+                        if let Some(OrderBookMessage::Order(order)) = maybe_liquidation_message {
+                            println!("[LIQUIDATION] order: {}", order);
+                            book.insert_order(order).await;
+                        }
                     }
-                }
 
-                maybe_order_message = book_rx.recv() => {
-                    if let Some(OrderBookMessage::Order(order)) = maybe_order_message {
-                        println!("[ORDER] {}", order);
-                        book.insert_order(order).await;
+                    maybe_order_message = book_rx.recv() => {
+                        if let Some(OrderBookMessage::Order(order)) = maybe_order_message {
+                            println!("[ORDER] {}", order);
+                            book.insert_order(order).await;
+                        }
                     }
                 }
             }
@@ -94,7 +96,14 @@ async fn main() {
             .expect("Failed to create tokio runtime on positions thread");
 
         mini_runtime.block_on(async move {
-            run_position_loop(oracle_rx, position_rx, positions, sockets).await;
+            run_position_loop(
+                oracle_rx,
+                position_rx,
+                positions,
+                wallet_tx.clone(),
+                sockets,
+            )
+            .await;
         });
     });
 

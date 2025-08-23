@@ -3,8 +3,8 @@ use rust_decimal_macros::dec;
 use serde::Serialize;
 use std::{collections::HashMap, fmt, sync::Arc};
 use tokio::sync::{
-    mpsc::{Sender, UnboundedReceiver},
-    Mutex,
+    mpsc::{Sender, UnboundedReceiver, UnboundedSender},
+    oneshot, Mutex,
 };
 use uuid::Uuid;
 
@@ -19,6 +19,7 @@ use crate::{
             OrderType::MARKET,
             Side::{ASK, BID},
         },
+        wallet::{WalletCreditMessage, WalletDebitMessage, WalletEvent, WalletOneshotReply},
     },
     types::OrderBookMessage,
     SocketList,
@@ -45,6 +46,7 @@ pub struct PositionTracker {
     last_traded_price: Decimal,
     current_funding_rate: Decimal,
     funding_rate_window: Vec<Decimal>,
+    wallet_tx: UnboundedSender<WalletEvent>,
 }
 
 const LIQUIDATION_THRESHOLD: Decimal = dec!(0.8);
@@ -69,8 +71,18 @@ impl fmt::Display for Trade {
     }
 }
 
+pub enum Sides {
+    LONG,
+    SHORT,
+}
+
+pub struct FundingRatePaymentMessage {
+    pub side: Sides,
+}
+
 pub enum EngineEvent {
     Trade(Trade),
+    FundingRatePayment(FundingRatePaymentMessage),
 }
 
 fn adjust_for_leverage(margin: Decimal, leverage: Decimal) -> Decimal {
@@ -78,7 +90,10 @@ fn adjust_for_leverage(margin: Decimal, leverage: Decimal) -> Decimal {
 }
 
 impl PositionTracker {
-    pub fn new(book_liquidation_tx: BookLiquidationTx) -> PositionTracker {
+    pub fn new(
+        book_liquidation_tx: BookLiquidationTx,
+        wallet_tx: UnboundedSender<WalletEvent>,
+    ) -> PositionTracker {
         PositionTracker {
             positions: PositionMap::new(),
             book_liquidation_tx,
@@ -86,6 +101,7 @@ impl PositionTracker {
             mark_price: dec!(0),
             current_funding_rate: dec!(0),
             funding_rate_window: Vec::new(),
+            wallet_tx: wallet_tx,
         }
     }
 
@@ -233,12 +249,115 @@ impl PositionTracker {
             self.liquidate(user_id).await;
         }
     }
+
+    pub async fn make_funding_payments(&mut self, side_to_pay: Sides) {
+        // loop through positions
+        // find the side
+        // either make or take payment
+        match side_to_pay {
+            Sides::LONG => {
+                for position in self.positions.iter() {
+                    if position.1.size > dec!(0) {
+                        let sent = self
+                            .wallet_tx
+                            .send(WalletEvent::Credit(WalletCreditMessage {
+                                wallet_id: position.0.clone(),
+                                amount: self.current_funding_rate
+                                    * position.1.entry_price
+                                    * position.1.size,
+                            }));
+
+                        if let Err(_) = sent {
+                            println!("[POSITION WALLET EVENT SEND ERROR]");
+                        }
+                    } else {
+                        // positions that are paying
+                        let (oneshot_tx, oneshot_rx) = oneshot::channel::<WalletOneshotReply>();
+
+                        let sent = self.wallet_tx.send(WalletEvent::Debit(WalletDebitMessage {
+                            wallet_id: position.0.clone(),
+                            amount: self.current_funding_rate
+                                * position.1.entry_price
+                                * (-position.1.size),
+
+                            oneshot_reply: Some(oneshot_tx),
+                        }));
+
+                        if let Err(_) = sent {
+                            println!("[POSITION WALLET EVENT SEND ERROR]");
+                        }
+
+                        match oneshot_rx.await {
+                            Ok(_) => {
+                                //  TODO: maybe force liquidate if the user doesn't have cash on
+                                //        wallet.
+                            }
+                            Err(err) => {
+                                println!(
+                                    "[POSITION FUNDING RATE PAYMENT ONESHOT REPLY ERROR]\n{}",
+                                    err
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Sides::SHORT => {
+                for position in self.positions.iter() {
+                    if position.1.size < dec!(0) {
+                        let sent = self
+                            .wallet_tx
+                            .send(WalletEvent::Credit(WalletCreditMessage {
+                                wallet_id: position.0.clone(),
+                                amount: self.current_funding_rate
+                                    * position.1.entry_price
+                                    * position.1.size,
+                            }));
+
+                        if let Err(_) = sent {
+                            println!("[POSITION WALLET EVENT SEND ERROR]");
+                        }
+                    } else {
+                        // positions that are paying
+                        let (oneshot_tx, oneshot_rx) = oneshot::channel::<WalletOneshotReply>();
+
+                        let sent = self.wallet_tx.send(WalletEvent::Debit(WalletDebitMessage {
+                            wallet_id: position.0.clone(),
+                            amount: self.current_funding_rate
+                                * position.1.entry_price
+                                * (-position.1.size),
+
+                            oneshot_reply: Some(oneshot_tx),
+                        }));
+
+                        if let Err(_) = sent {
+                            println!("[POSITION WALLET EVENT SEND ERROR]");
+                        }
+
+                        match oneshot_rx.await {
+                            Ok(_) => {
+                                //  TODO: maybe force liquidate if the user doesn't have cash on
+                                //        wallet.
+                            }
+                            Err(err) => {
+                                println!(
+                                    "[POSITION FUNDING RATE PAYMENT ONESHOT REPLY ERROR]\n{}",
+                                    err
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub async fn run_position_loop(
     mut oracle_rx: UnboundedReceiver<BtcPrice>,
     mut position_rx: mpsc::UnboundedReceiver<EngineEvent>,
     mut positions: PositionTracker,
+    wallet_tx: UnboundedSender<WalletEvent>,
     sockets: Arc<Mutex<SocketList>>,
 ) {
     loop {
@@ -258,10 +377,15 @@ pub async fn run_position_loop(
             }
             maybe_event = position_rx.recv() => {
                 match maybe_event {
-                    Some(EngineEvent::Trade(trade)) => {
-                        positions.last_traded_price = trade.price;
-                        positions.update_position(&trade);
-                        broadcast_trade(trade.clone(), sockets.clone()).await;
+                    Some(event) => {
+                        match event {
+                            EngineEvent::Trade(trade) => {
+                                positions.last_traded_price = trade.price;
+                                positions.update_position(&trade);
+                                broadcast_trade(trade.clone(), sockets.clone()).await;
+                            }
+                            EngineEvent::FundingRatePayment(msg) => positions.make_funding_payments(msg.side).await
+                        }
                     }
                     None => {
                         break;

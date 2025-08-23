@@ -9,7 +9,7 @@ use rust_decimal::Decimal;
 use OrderType::{LIMIT, MARKET};
 
 use crate::domain::position::{EngineEvent, Trade};
-use crate::domain::wallet::{WalletEvent, WalletMessage, WalletOneshotReply};
+use crate::domain::wallet::{WalletDebitMessage, WalletEvent, WalletOneshotReply};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OrderType {
@@ -136,7 +136,7 @@ impl OrderBook {
     pub async fn handle_buy(&mut self, mut order: Order) {
         let (oneshot_tx, oneshot_rx) = oneshot::channel::<WalletOneshotReply>();
 
-        if let Err(err) = self.wallet_tx.send(WalletEvent::Debit(WalletMessage {
+        if let Err(err) = self.wallet_tx.send(WalletEvent::Debit(WalletDebitMessage {
             wallet_id: order.user_id.clone(),
             amount: order.amount * order.price,
 
@@ -287,7 +287,7 @@ impl OrderBook {
     pub async fn handle_sell(&mut self, mut order: Order) {
         let (oneshot_tx, oneshot_rx) = oneshot::channel::<WalletOneshotReply>();
 
-        if let Err(err) = self.wallet_tx.send(WalletEvent::Debit(WalletMessage {
+        if let Err(err) = self.wallet_tx.send(WalletEvent::Debit(WalletDebitMessage {
             wallet_id: order.user_id.clone(),
             amount: order.amount * order.price,
 
