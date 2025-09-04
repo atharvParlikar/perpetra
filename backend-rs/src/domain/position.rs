@@ -180,23 +180,19 @@ impl PositionTracker {
             self.positions.remove_entry(&position_id);
         }
     }
-
-    async fn liquidate(&mut self, user_id: &String) {
+    async fn liquidate(&mut self, user_id: &str) {
         if let Some(position) = self.positions.get(user_id) {
-            let mut order = Order {
-                id: Uuid::new_v4().to_string(),
-                user_id: position.user_id.clone(),
-                amount: position.size,
-                price: dec!(0),
-                order_type: MARKET,
-                side: ASK,
-                leverage: dec!(1),
+            let size = position.size;
+            if size == dec!(0) {
+                return;
+            } // nothing to do
 
-                responder: None,
-            };
+            let order: Order = Order::from(position);
 
-            if position.size < dec!(0) {
-                order.side = BID;
+            // Final belt-and-suspenders:
+            if let Err(e) = order.validate() {
+                eprintln!("Liquidation order rejected: {}", e);
+                return;
             }
 
             if let Err(error) = self
@@ -204,7 +200,7 @@ impl PositionTracker {
                 .send(OrderBookMessage::Order(order))
                 .await
             {
-                eprintln!("{}", error);
+                eprintln!("send liquidation: {}", error);
             }
         }
     }
@@ -357,7 +353,6 @@ pub async fn run_position_loop(
     mut oracle_rx: UnboundedReceiver<BtcPrice>,
     mut position_rx: mpsc::UnboundedReceiver<EngineEvent>,
     mut positions: PositionTracker,
-    wallet_tx: UnboundedSender<WalletEvent>,
     sockets: Arc<Mutex<SocketList>>,
 ) {
     loop {
@@ -365,10 +360,9 @@ pub async fn run_position_loop(
             maybe_oracle_event = oracle_rx.recv() => {
                 match maybe_oracle_event {
                     Some(oracle_event) => {
-                        positions.update_funding_rate(oracle_event.price_usd);
-                        // in production instead of moving average use just the price, not the moving average
-                        positions.update_mark_price(oracle_event.moving_average);
                         positions.update_risk().await;
+                        positions.update_funding_rate(oracle_event.price_usd);
+                        positions.update_mark_price(oracle_event.price_usd);
                     }
                     None => {
                         break;

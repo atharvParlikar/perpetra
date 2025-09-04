@@ -6,9 +6,10 @@ use rust_decimal_macros::dec;
 use tokio::sync::oneshot;
 
 use rust_decimal::Decimal;
+use uuid::Uuid;
 use OrderType::{LIMIT, MARKET};
 
-use crate::domain::position::{EngineEvent, Trade};
+use crate::domain::position::{EngineEvent, Position, Trade};
 use crate::domain::wallet::{WalletDebitMessage, WalletEvent, WalletOneshotReply};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +48,33 @@ pub struct Order {
     pub responder: Option<oneshot::Sender<OrderResponse>>,
 }
 
+impl Order {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.amount <= dec!(0) {
+            return Err(format!("amount must be > 0, got {}", self.amount));
+        }
+        Ok(())
+    }
+}
+
+impl From<&Position> for Order {
+    // optional helper if you like
+    fn from(p: &Position) -> Self {
+        let size = p.size;
+        let side = if size > dec!(0) { Side::ASK } else { Side::BID }; // opposite to close
+        Order {
+            id: Uuid::new_v4().to_string(),
+            user_id: p.user_id.clone(),
+            amount: size.abs(), // POSITIVE
+            price: dec!(0),
+            order_type: OrderType::MARKET,
+            side,
+            leverage: dec!(1),
+            responder: None,
+        }
+    }
+}
+
 pub struct OrderBook {
     pub bids: BTreeMap<Price, VecDeque<Order>>,
     pub asks: BTreeMap<Price, VecDeque<Order>>,
@@ -65,11 +93,18 @@ pub struct OrderResponse {
 }
 impl fmt::Display for Order {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{} {} {} BTC @ {}",
-            self.user_id, self.side, self.amount, self.price
-        )
+        match self.order_type {
+            OrderType::LIMIT => write!(
+                f,
+                "{} {} {} BTC @ {}",
+                self.user_id, self.side, self.amount, self.price
+            ),
+            OrderType::MARKET => write!(
+                f,
+                "{} {} {} BTC @ MARKET",
+                self.user_id, self.side, self.amount
+            ),
+        }
     }
 }
 
@@ -136,12 +171,14 @@ impl OrderBook {
     pub async fn handle_buy(&mut self, mut order: Order) {
         let (oneshot_tx, oneshot_rx) = oneshot::channel::<WalletOneshotReply>();
 
-        if let Err(err) = self.wallet_tx.send(WalletEvent::Debit(WalletDebitMessage {
+        let sent = self.wallet_tx.send(WalletEvent::Debit(WalletDebitMessage {
             wallet_id: order.user_id.clone(),
             amount: order.amount * order.price,
 
             oneshot_reply: Some(oneshot_tx),
-        })) {
+        }));
+
+        if let Err(err) = sent {
             eprintln!("[ORDER WALLET CHECK ERROR] {}", err);
         }
 

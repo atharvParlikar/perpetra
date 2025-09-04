@@ -96,14 +96,7 @@ async fn main() {
             .expect("Failed to create tokio runtime on positions thread");
 
         mini_runtime.block_on(async move {
-            run_position_loop(
-                oracle_rx,
-                position_rx,
-                positions,
-                wallet_tx.clone(),
-                sockets,
-            )
-            .await;
+            run_position_loop(oracle_rx, position_rx, positions, sockets).await;
         });
     });
 
@@ -117,10 +110,8 @@ async fn main() {
 
         mini_runtime.block_on(async move {
             while let Some(message) = wallet_rx.recv().await {
-                println!("got some message");
                 match message {
                     WalletEvent::Debit(message) => {
-                        println!("{}, {}", message.wallet_id, message.amount);
                         let debit_success = wallets.debit(message.wallet_id, message.amount);
                         let oneshot_reply_message = if debit_success {
                             "".to_string()

@@ -1,10 +1,22 @@
+use std::collections::VecDeque;
+
 use chrono::{Duration, Timelike, Utc};
-use rust_decimal::Decimal;
+use rust_decimal::{prelude::FromPrimitive, Decimal};
 use rust_decimal_macros::dec;
 use tokio::time::sleep;
 
 pub fn EMA(p: Decimal, previous_ema: Decimal, alpha: Decimal) -> Decimal {
     alpha * p + (dec!(1) - alpha) * previous_ema
+}
+
+pub fn average(prices: &VecDeque<Decimal>) -> Decimal {
+    let mut sum = dec!(0);
+
+    for price in prices.iter() {
+        sum += price;
+    }
+
+    sum / Decimal::from_usize(prices.len()).unwrap()
 }
 
 pub async fn scheduler() {
